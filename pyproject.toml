@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "poswing"
+version = "0.1.0"
+description = "Position-based round swing and HLTV Rating 3.0-style analytics for CS2 demos"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "demoparser2>=0.30",
+    "pandas>=2.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+web = ["fastapi>=0.110", "uvicorn>=0.27", "python-multipart>=0.0.9"]
+dev = ["pytest>=7", "httpx>=0.25"]
+
+[project.scripts]
+poswing = "poswing.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+poswing = [
+    "navdata/*.csv.gz",
+    "assets/models/*.json",
+    "assets/graphs/*.json",
+    "assets/radar/*.png",
+    "assets/radar/*.json",
+    "assets/radar/*.txt",
+    "web/static/*",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

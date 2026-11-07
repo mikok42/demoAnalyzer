@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>poswing</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='11' cy='16' r='7' fill='%234aa3ff'/%3E%3Ccircle cx='22' cy='16' r='7' fill='%23f5a524' fill-opacity='.9'/%3E%3C/svg%3E">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="dot ct"></span><span class="dot t"></span> poswing</div>
+  <div id="match-title" class="match-title">no demo selected</div>
+  <nav class="views">
+    <button data-view="replay" class="active">Replay</button>
+    <button data-view="stats">Stats</button>
+    <button data-view="zones">Zones</button>
+  </nav>
+  <button id="toggle-sidebar" class="icon-btn" title="demos">&#9776;</button>
+</header>
+
+<div class="layout">
+  <aside id="sidebar" class="sidebar">
+    <div class="upload" id="dropzone">
+      <input type="file" id="file-input" accept=".dem,.pkl" multiple hidden>
+      <div class="upload-text">
+        <strong>Drop a CS2 demo here</strong>
+        <span>or <button id="browse" class="link">browse</button> (.dem, up to ~1 GB)</span>
+      </div>
+    </div>
+    <div id="jobs" class="jobs"></div>
+    <div class="section-title">Demos</div>
+    <ul id="match-list" class="match-list"></ul>
+    <div class="sidebar-foot" id="foot"></div>
+  </aside>
+
+  <main class="main">
+    <section id="empty-state" class="empty">
+      <h1>Position-based round swing for CS2</h1>
+      <p>Upload a demo on the left. Each round is replayed as dots on the radar with the live win probability,
+         the swing attribution of every kill, plant and death, and an engine that proposes where the team
+         should go next.</p>
+      <p class="muted">Mirage ships with a model trained on 7,393 professional rounds; other maps are fitted on the demo itself.</p>
+    </section>
+
+    <section id="match-view" class="hidden">
+      <div class="scoreboard">
+        <div class="team team-a"><span class="name" id="team-a"></span><span class="score" id="score-a"></span></div>
+        <div class="vs"><span id="map-name"></span><span id="model-badge" class="badge"></span></div>
+        <div class="team team-b"><span class="score" id="score-b"></span><span class="name" id="team-b"></span></div>
+      </div>
+      <div id="round-strip" class="round-strip"></div>
+
+      <div id="view-replay" class="view">
+        <div class="replay-grid">
+          <div class="radar-col">
+            <div class="radar-wrap">
+              <canvas id="radar"></canvas>
+              <div class="overlay top-left">
+                <div id="clock" class="clock">1:55</div>
+                <div id="round-info" class="round-info"></div>
+              </div>
+              <div class="overlay top-right">
+                <div class="pwin" id="pwin"></div>
+              </div>
+              <div class="overlay bottom-left">
+                <label class="chk"><input type="checkbox" id="chk-names" checked> names</label>
+                <label class="chk"><input type="checkbox" id="chk-zones"> zones</label>
+                <label class="chk"><input type="checkbox" id="chk-trails"> trails</label>
+              </div>
+            </div>
+            <div class="timeline">
+              <canvas id="timeline"></canvas>
+              <div class="controls">
+                <button id="btn-prev-round" title="previous round ([)">&#171;</button>
+                <button id="btn-back" title="-5 s (shift+left)">&#8249;&#8249;</button>
+                <button id="btn-play" class="play" title="play / pause (space)">&#9654;</button>
+                <button id="btn-fwd" title="+5 s (shift+right)">&#8250;&#8250;</button>
+                <button id="btn-next-round" title="next round (])">&#187;</button>
+                <select id="speed"><option value="1">1x</option><option value="2" selected>2x</option><option value="4">4x</option><option value="8">8x</option></select>
+                <input type="range" id="seek" min="0" max="100" step="0.05" value="0">
+                <span id="time-label" class="time-label">0.0 s</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel-col">
+            <div class="tabs">
+              <button data-tab="players" class="active">Players</button>
+              <button data-tab="engine">Engine</button>
+              <button data-tab="feed">Feed</button>
+            </div>
+            <div id="tab-players" class="tab active"></div>
+            <div id="tab-engine" class="tab">
+              <div class="engine-form">
+                <div class="row">
+                  <label>Side</label>
+                  <div class="seg" id="eng-side"><button data-v="CT" class="active ct">CT</button><button data-v="T" class="t">T</button></div>
+                </div>
+                <div class="row"><label>Horizon <span id="eng-h-val">10</span> s</label><input type="range" id="eng-h" min="4" max="30" step="1" value="10"></div>
+                <div class="row"><label>Enemy</label>
+                  <div class="seg" id="eng-enemy"><button data-v="static" class="active">static</button><button data-v="predict">predict</button></div></div>
+                <div class="row"><label>Max movers</label>
+                  <div class="seg" id="eng-movers"><button data-v="" class="active">any</button><button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button></div></div>
+                <button id="eng-run" class="primary">Analyse this moment</button>
+              </div>
+              <div id="eng-result" class="engine-result"></div>
+            </div>
+            <div id="tab-feed" class="tab"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="view-stats" class="view hidden">
+        <h2>Key moments <span class="muted small">largest single swings of the match, click to replay</span></h2>
+        <div id="key-moments" class="moments"></div>
+        <h2>Box score <span class="muted small">HLTV Rating 3.0 ingredients; rating is an approximation</span></h2>
+        <div class="table-wrap"><table id="box-table" class="data"></table></div>
+        <h2>Round swing breakdown <span class="muted small">percentage points of win probability per round</span></h2>
+        <div class="table-wrap"><table id="swing-table" class="data"></table></div>
+        <h2>Rounds</h2>
+        <div class="table-wrap"><table id="rounds-table" class="data"></table></div>
+      </div>
+
+      <div id="view-zones" class="view hidden">
+        <h2>Zone values <span class="muted small">model_pp_at_50: holding the zone with one player, percentage points at a 50/50 state</span></h2>
+        <div class="zone-filters">
+          <div class="seg" id="zone-side"><button data-v="CT" class="active ct">CT</button><button data-v="T" class="t">T</button></div>
+          <div class="seg" id="zone-phase"><button data-v="pre" class="active">pre-plant</button><button data-v="postA">bomb A</button><button data-v="postB">bomb B</button></div>
+        </div>
+        <div class="zones-grid">
+          <div class="radar-wrap small"><canvas id="zone-radar"></canvas></div>
+          <div class="table-wrap"><table id="zone-table" class="data"></table></div>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+<div id="toast" class="toast hidden"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
