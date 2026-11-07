@@ -1,0 +1,64 @@
+{
+  "fetched_at": "2026-11-07T20:40:00Z",
+  "note": "Raw demos and parsed pickles live only on this machine under data/. They are gitignored (size and HLTV demo redistribution). Re-fetch with the commands below.",
+  "corpora": [
+    {
+      "id": "esta",
+      "title": "Esports Trajectories and Actions",
+      "url": "https://github.com/pnxenopoulos/esta",
+      "paper": "https://arxiv.org/abs/2209.09861",
+      "license": "CC BY-SA 4.0",
+      "game": "CS:GO",
+      "period": "2021-01 to 2022-05",
+      "what": "1,558 professional demos already parsed to JSON (2 Hz frames, kills, damage, flashes, bomb). LAN 680 + online 878.",
+      "local_raw": "data/esta/data/{lan,online}/*.json.xz",
+      "local_cache": "data/cache/esta/*.pkl",
+      "matches": 1558,
+      "rounds": 41075,
+      "by_map": {
+        "de_inferno": {"matches": 289, "rounds": 7647},
+        "de_mirage": {"matches": 278, "rounds": 7393},
+        "de_nuke": {"matches": 260, "rounds": 6758},
+        "de_dust2": {"matches": 197, "rounds": 5178},
+        "de_overpass": {"matches": 181, "rounds": 4846},
+        "de_vertigo": {"matches": 169, "rounds": 4489},
+        "de_ancient": {"matches": 132, "rounds": 3460},
+        "de_train": {"matches": 52, "rounds": 1304}
+      },
+      "fetch": "git clone --depth 1 https://github.com/pnxenopoulos/esta.git data/esta && poswing esta data/esta/data/lan -o data/cache/esta --workers 2 && poswing esta data/esta/data/online -o data/cache/esta --workers 2"
+    },
+    {
+      "id": "cs2-hltv-2026-03-04",
+      "title": "HLTV CS2 demos (blanchon/cs2_dataset_demo)",
+      "url": "https://huggingface.co/datasets/blanchon/cs2_dataset_demo",
+      "license": "Dataset card: CC BY 4.0. Demos are mirrors of HLTV public /download/demo/; tournament terms still apply. Not redistributed in git.",
+      "game": "CS2",
+      "patch": "14141",
+      "period": "2026-03-23 to 2026-04-20",
+      "upstream_size": "1,988 maps, about 935 GB. This checkout is a slice, not the whole set.",
+      "selection": "Per map: every regulation demo (16-36 rounds) with HLTV stars >= 3, plus the smallest regulation demos, in two batches (18 then 24 extra per map). Active-duty pool only: mirage, dust2, nuke, ancient, anubis, inferno, overpass. Parsed at 1 Hz with demoparser2 into MatchData.",
+      "local_raw": "data/cs2-hltv/demos/**/*.dem",
+      "local_cache": "data/cache/cs2/*.pkl",
+      "local_manifest": "data/cs2-selection.json",
+      "matches": 322,
+      "rounds": 5764,
+      "by_map": {
+        "de_mirage": {"matches": 53, "rounds": 969},
+        "de_dust2": {"matches": 52, "rounds": 912},
+        "de_nuke": {"matches": 44, "rounds": 810},
+        "de_ancient": {"matches": 45, "rounds": 808},
+        "de_anubis": {"matches": 43, "rounds": 779},
+        "de_inferno": {"matches": 43, "rounds": 752},
+        "de_overpass": {"matches": 42, "rounds": 734}
+      },
+      "disk_raw_gb": 108,
+      "not_downloaded": [
+        "The other ~1,666 maps in blanchon/cs2_dataset_demo (~800 GB still on the Hub).",
+        "KEDevO/CounterQuant-CS2-Demos — listed on the Hub card, API returned 401 (private or removed).",
+        "sneakyzero/cs2-pro-round-economy — 22 MB of freeze-time economy only, no positions, so it cannot train the positional layer.",
+        "RekaAI/CS2-10k and Unit293/CQ-Avatar-Training — trajectories exist but as egocentric video clips or normalized single-player windows, not full 10-player round state."
+      ]
+    }
+  ],
+  "usable_for_fit": "poswing fit reads a directory of .pkl files. Keep ESTA (CS:GO places) and this CS2 slice separate unless place names are aligned. Mirage renames live in poswing.esta.PLACE_RENAMES; other maps are not renamed."
+}
