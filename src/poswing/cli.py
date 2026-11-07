@@ -14,7 +14,7 @@ from .analysis import Dataset, parse_zone_spec, reactions, team_setups, zone_val
 from .data import MatchData
 from .economy import DuelTable
 from .report import BOX_COLUMNS, SETUP_COLUMNS, SWING_COLUMNS, ZONE_COLUMNS, table
-from .winprob import WinProbModel
+from .winprob import PositionalLayer, WinProbModel
 from .zones import Zoner
 
 log = logging.getLogger("poswing")
@@ -114,7 +114,8 @@ def cmd_fit(args) -> None:
     maps = [args.map] if args.map else ds.maps()
     if len(maps) != 1:
         sys.exit(f"inputs contain several maps {maps}; choose one with --map")
-    model = ds.fit_model(maps[0], positional=__import__("poswing.winprob", fromlist=["PositionalLayer"]).PositionalLayer(l2=args.l2))
+    model = ds.fit_model(maps[0], positional=PositionalLayer(l2=args.l2, target=args.target, horizon=args.horizon,
+                                                             shrink_rounds=args.shrink))
     model.save(args.out)
     print(f"fitted {maps[0]} on {model.n_rounds} rounds / {model.n_states} states, {len(model.positional.features)} positional features -> {args.out}")
 
@@ -217,11 +218,10 @@ def cmd_engine(args) -> None:
     matches = [demo] + [m for m in data if m.source != demo.source and m.map_name == demo.map_name]
     ds = Dataset.build(matches, zoner)
     model = _model_for(ds, demo.map_name, args.model)
-    sit = situation_at(demo, zoner, args.round, t=args.time, tick=args.tick)
-    side = args.side or _side_for_team(sit, args.team)
-    graph = TransitionGraph.from_matches(matches, zoner, demo.map_name, horizon=args.horizon)
-    eng = Engine(model, graph, move_cost=args.move_cost)
-    lines, p_now = eng.suggest(sit, side, horizon=args.horizon, top=args.top, beam=args.beam,
+    t = args.time
+    if args.clock:
+        mm, ss = args.clock.split(":")
+        t = 115.0 - (int(mm) * 60 + int(ss))
     sit = situation_at(demo, zoner, args.round, t=t, tick=args.tick)
     side = args.side or _side_for_team(sit, args.team)
     graph = TransitionGraph.from_matches(matches, zoner, demo.map_name, horizon=args.horizon)
@@ -231,6 +231,11 @@ def cmd_engine(args) -> None:
     eng = Engine(model, graph, move_cost=args.move_cost)
     lines, p_now = eng.suggest(sit, side, horizon=args.horizon, top=args.top, beam=args.beam,
                                enemy_mode=args.enemy, max_movers=args.max_movers)
+    print(sit.describe())
+    print(f"\nEngine for {side} ({sit.teams.get(side)}), horizon {args.horizon:.0f}s, enemy {args.enemy}, "
+          f"model {model.n_rounds} rounds of {demo.map_name}")
+    print(f"Current P(win) for {side}: {100 * p_now:.1f}%  (baseline without positions: "
+          f"{100 * model.p_side(sit.state, side, False):.1f}%)\n")
     for i, ln in enumerate(lines, 1):
         print(f"{i}. {ln.describe()}")
     if args.book:
@@ -240,11 +245,6 @@ def cmd_engine(args) -> None:
         Path(args.json).write_text(json.dumps({
             "situation": sit.describe(), "side": side, "p_now": p_now,
             "lines": [{"p_win": l.p_win, "delta": l.delta, "zones": l.zones, "moves": l.moves} for l in lines],
-        }, indent=1))
-
-
-def _resolve_team(name: str, matches: list[MatchData]) -> str:
-    teams = sorted({t for m in matches for t in m.team_names()})
         }, indent=1))
 
 
@@ -260,6 +260,11 @@ def cmd_serve(args) -> None:
 def _resolve_team(name: str, matches: list[MatchData]) -> str:
     teams = sorted({t for m in matches for t in m.team_names()})
     for t in teams:
+        if t.lower() == name.lower():
+            return t
+    hits = [t for t in teams if name.lower() in t.lower()]
+    if len(hits) == 1:
+        return hits[0]
     sys.exit(f"team '{name}' not found; available: {teams}")
 
 
@@ -284,10 +289,6 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(s)
     s.set_defaults(func=cmd_parse)
 
-    s = sub.add_parser("fit", help="fit the win-probability model on demos/.pkl files")
-    _add_common(s)
-    s.set_defaults(func=cmd_parse)
-
     s = sub.add_parser("esta", help="convert ESTA dataset files (.json.xz) into cached .pkl files")
     s.add_argument("src", help="directory with ESTA .json.xz files")
     s.add_argument("-o", "--out", required=True)
@@ -300,6 +301,15 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("fit", help="fit the win-probability model on demos/.pkl files")
     s.add_argument("inputs", nargs="+")
     s.add_argument("-o", "--out", required=True)
+    s.add_argument("--map")
+    s.add_argument("--l2", type=float, default=2.0, help="L2 strength of the positional layer")
+    s.add_argument("--target", choices=["horizon", "outcome"], default="horizon",
+                   help="horizon: zone coefficients explain the change of the baseline over the next --horizon seconds "
+                        "(causal-ish); outcome: classic round-outcome regression (correlational)")
+    s.add_argument("--horizon", type=float, default=15.0, help="seconds ahead for --target horizon")
+    s.add_argument("--shrink", type=float, default=5.0, help="extra shrinkage for rare zones (weighted rounds)")
+    _add_common(s)
+    s.set_defaults(func=cmd_fit)
 
     s = sub.add_parser("report", help="box score, swing breakdown, zone values and team setups")
     s.add_argument("inputs", nargs="+")
@@ -347,6 +357,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("demo")
     s.add_argument("--round", type=int, required=True)
     s.add_argument("--time", type=float, help="seconds since freeze end")
+    s.add_argument("--clock", help="in-game round clock instead of --time, e.g. 1:20 (pre-plant only)")
     s.add_argument("--tick", type=int)
     s.add_argument("--team")
     s.add_argument("--side", choices=["T", "CT"])
@@ -359,17 +370,6 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--max-movers", type=int)
     s.add_argument("--move-cost", type=float, default=0.003, help="probability cost per moving player (prefers simple lines)")
     s.add_argument("--book", action="store_true", help="also show similar historical situations")
-    s.add_argument("--json")
-    _add_common(s)
-    s.set_defaults(func=cmd_engine)
-    return p
-
-
-def main(argv: list[str] | None = None) -> None:
-    args = build_parser().parse_args(argv)
-    logging.basicConfig(level=logging.DEBUG if getattr(args, "verbose", False) else logging.INFO,
-                        format="%(levelname)s %(message)s")
-    pd.set_option("display.width", 200)
     s.add_argument("--json")
     _add_common(s)
     s.set_defaults(func=cmd_engine)
@@ -387,3 +387,13 @@ def main(argv: list[str] | None = None) -> None:
     return p
 
 
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
+    logging.basicConfig(level=logging.DEBUG if getattr(args, "verbose", False) else logging.INFO,
+                        format="%(levelname)s %(message)s")
+    pd.set_option("display.width", 200)
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

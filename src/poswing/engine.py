@@ -19,7 +19,7 @@ import pandas as pd
 
 from .analysis import Dataset, _similarity
 from .data import MatchData
-from .state import GameState, add_zones, time_left_at
+from .state import GameState, add_zones, phase_label, plant_sites, time_left_at
 from .winprob import WinProbModel
 from .zones import Zoner
 
@@ -50,7 +50,7 @@ class Situation:
 
     def describe(self) -> str:
         st = self.state
-        clock = f"bomb {st.time_left:.0f}s" if st.bomb_planted else f"{st.time_left:.0f}s left"
+        clock = (f"bomb on {st.bomb_site or '?'} {st.time_left:.0f}s" if st.bomb_planted else f"{st.time_left:.0f}s left")
         lines = [
             f"{self.match.map_name} round {self.round_num} @ {self.t:.1f}s (tick {self.tick}) - {clock}, "
             f"{st.t_alive}v{st.ct_alive} (T v CT), T buy {st.t_buy}, CT buy {st.ct_buy}",
@@ -81,11 +81,13 @@ def situation_at(match: MatchData, zoner: Zoner, round_num: int, t: float | None
     if pd.notna(r["plant_tick"]):
         plant_t = (float(r["plant_tick"]) - float(r["freeze_end_tick"])) / match.tick_rate
     planted, left = time_left_at(t_now, plant_t)
+    site = plant_sites(match).get(round_num) if planted else None
     alive = grp[grp["is_alive"]]
     state = GameState(
         map_name=match.map_name, t_alive=int((alive["team"] == "T").sum()), ct_alive=int((alive["team"] == "CT").sum()),
         bomb_planted=planted, time_left=left, t_buy=str(r["t_buy"]), ct_buy=str(r["ct_buy"]), ct_has_kit=bool(r["ct_has_kit"]),
         t_zones=tuple(sorted(alive.loc[alive["team"] == "T", "zone"])), ct_zones=tuple(sorted(alive.loc[alive["team"] == "CT", "zone"])),
+        bomb_site=site,
     )
     players = [PlayerPos(int(p.steamid), match.player_name(int(p.steamid)), str(p.team), str(p.zone), bool(p.is_alive), float(p.health))
                for p in grp.itertuples(index=False)]
@@ -111,6 +113,7 @@ class TransitionGraph:
             s = add_zones(m, zoner)
             s = s[s["is_alive"]].sort_values(["round_num", "steamid", "tick"])
             plant = {int(b.round_num): float(b.t) for b in m.bomb[m.bomb["event"] == "plant"].itertuples(index=False)} if not m.bomb.empty else {}
+            sites = plant_sites(m)
             for (rnum, sid), grp in s.groupby(["round_num", "steamid"]):
                 zones = grp["zone"].tolist()
                 ts = grp["t"].tolist()
@@ -128,7 +131,8 @@ class TransitionGraph:
                         j += 1
                     if j >= len(ts):
                         break
-                    phase = "post" if (rnum in plant and ts[i] >= plant[rnum]) else "pre"
+                    planted = rnum in plant and ts[i] >= plant[rnum]
+                    phase = phase_label(planted, sites.get(int(rnum)))
                     g.later.setdefault((side, phase, zones[i]), Counter())[zones[j]] += 1
         return g
 
@@ -141,10 +145,6 @@ class TransitionGraph:
 
     def _medians(self) -> dict[str, list[tuple[str, float]]]:
         """Median transition time per edge, grouped by origin (cached; cheap to recompute)."""
-        cache = getattr(self, "_med_cache", None)
-        if cache is None or cache[0] != len(self.edge_times):
-            out: dict[str, list[tuple[str, float]]] = defaultdict(list)
-            for (a, b), times in self.edge_times.items():
         cache = getattr(self, "_med_cache", None)
         if cache is None or cache[0] != len(self.edge_times):
             out: dict[str, list[tuple[str, float]]] = defaultdict(list)
@@ -205,6 +205,10 @@ class TransitionGraph:
     def travel_time(self, a: str, b: str) -> float:
         for z, t in self._medians().get(a, []):
             if z == b:
+                return t
+        return float("inf")
+
+    def reachable(self, zone: str, horizon: float) -> dict[str, float]:
         """Dijkstra over median observed transition times."""
         med = self._medians()
         dist = {zone: 0.0}

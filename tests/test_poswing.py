@@ -142,7 +142,7 @@ def test_zone_values_and_setups(fitted):
     _, ds, model = fitted
     zv = zone_values(ds, model, "de_synth")
     assert {"side", "zone", "model_pp_at_50", "win_rate_when_held"} <= set(zv.columns)
-    st = team_setups(ds, model, "Alpha", "T", "de_synth", at=15.0, min_n=1)
+    st = team_setups(ds, model, "TRamp", "T", "de_synth", at=15.0, min_n=1)
     assert not st.empty and {"setup", "n", "win_rate", "edge_pp"} <= set(st.columns)
     emp, ranked = reactions(ds, model, "de_synth", "CT", ("Mid", "Mid", "TRamp", "TRamp", "TSpawn"), at=15.0)
     assert not ranked.empty
@@ -186,6 +186,15 @@ def test_cli_report_and_engine(match, tmp_path, capsys):
     assert "P(win)" in captured and "Engine for T" in captured
     main(["fit", str(pkl), "-o", str(tmp_path / "m.json")])
     assert (tmp_path / "m.json").exists()
+
+
+
+# ------------------------------------------------------------------------ esta
+def _esta_fixture(path):
+    """A two-round match in the ESTA JSON layout (coordinates on Mirage's nav mesh)."""
+    def player(sid, name, side, x, y, z, alive=True, inv=("AK-47",)):
+        return {"steamID": sid, "name": name, "team": side, "side": side, "x": x, "y": y, "z": z,
+                "hp": 100 if alive else 0, "isAlive": alive, "equipmentValue": 4000, "hasDefuse": side == "CT",
                 "inventory": [{"weaponName": w, "weaponClass": "Rifle"} for w in inv]}
     ts = [(1, "t1"), (2, "t2")]
     cts = [(11, "c1"), (12, "c2")]
@@ -193,6 +202,38 @@ def test_cli_report_and_engine(match, tmp_path, capsys):
 
     def frame(tick, t_alive=(True, True)):
         return {"tick": tick, "isKillFrame": False, "bombPlanted": False,
+                "t": {"players": [player(1, "t1", "T", *mid, alive=t_alive[0]), player(2, "t2", "T", *tunnel, alive=t_alive[1])]},
+                "ct": {"players": [player(11, "c1", "CT", *a_site), player(12, "c2", "CT", *ct_spawn)]}}
+
+    def rnd(num, fe, win):
+        return {"roundNum": num, "isWarmup": False, "startTick": fe - 1000, "freezeTimeEndTick": fe, "endTick": fe + 128 * 60,
+                "winningSide": win, "roundEndReason": "TerroristsWin" if win == "T" else "CTWin",
+                "ctTeam": "Blue", "tTeam": "Red", "tFreezeTimeEndEqVal": 20000, "ctFreezeTimeEndEqVal": 22000,
+                "ctSide": {"players": [{"steamID": s, "playerName": n} for s, n in cts]},
+                "tSide": {"players": [{"steamID": s, "playerName": n} for s, n in ts]},
+                "kills": [{"tick": fe + 128 * 20, "attackerSteamID": 11, "victimSteamID": 2, "attackerSide": "CT", "victimSide": "T",
+                           "attackerX": a_site[0], "attackerY": a_site[1], "attackerZ": a_site[2],
+                           "victimX": tunnel[0], "victimY": tunnel[1], "victimZ": tunnel[2], "weapon": "M4A1", "isHeadshot": True}],
+                "damages": [{"tick": fe + 128 * 20, "attackerSteamID": 11, "victimSteamID": 2, "attackerSide": "CT", "victimSide": "T",
+                             "hpDamageTaken": 100, "weapon": "M4A1"}],
+                "flashes": [], "bombEvents": [{"tick": fe + 128 * 40, "bombAction": "plant", "playerSteamID": 1, "bombSite": "A"}],
+                "frames": [frame(fe + 64 * i, t_alive=(True, 64 * i < 128 * 20)) for i in range(0, 120)]}
+
+    doc = {"mapName": "de_mirage", "tickRate": 128, "matchId": "m", "gameRounds": [rnd(1, 10000, "T"), rnd(2, 30000, "CT")]}
+    path.write_text(json.dumps(doc))
+    return path
+
+
+def test_esta_loader(tmp_path):
+    from poswing.esta import load_esta, nav_places
+
+    m = load_esta(_esta_fixture(tmp_path / "match.json"))
+    assert m.map_name == "de_mirage" and m.n_rounds == 2 and m.tick_rate == 128.0
+    assert m.rounds["winner"].tolist() == ["T", "CT"] and m.rounds["t_buy"].iloc[0] == "full-buy"
+    assert set(m.samples["place"]) >= {"BombsiteA", "CTSpawn", "Middle", "Underpass"}  # Tunnel renamed to CS2's Underpass
+    assert m.kills.iloc[0]["weapon"] == "M4A1-S" and m.kills.iloc[0]["victim_place"] == "Underpass"
+    assert m.kills.iloc[0]["victim_cat"] == "rifle1"
+    assert pd.notna(m.rounds["plant_tick"].iloc[0]) and m.rounds["ct_has_kit"].all()
     # 2 Hz thinned to 1 Hz, kill frames kept and flagged
     per_round = m.samples.groupby("round_num")["tick"].nunique().iloc[0]
     assert 60 <= per_round <= 64 and m.samples["is_event"].any()
@@ -200,3 +241,44 @@ def test_cli_report_and_engine(match, tmp_path, capsys):
     # downstream pipeline accepts it
     ds = Dataset.build([m], Zoner())
     assert ds.meta["map_name"].eq("de_mirage").all() and len(ds.states) > 100
+
+
+# ------------------------------------------------------------------ bomb site
+def test_phase_includes_bomb_site():
+    from poswing.state import phase_label, plant_sites
+
+    assert phase_label(False, "A") == "pre"
+    assert phase_label(True, "A") == "postA" and phase_label(True, "B") == "postB" and phase_label(True, None) == "post"
+    assert GameState("m", 3, 3, True, 30.0, bomb_site="B").phase == "postB"
+    # demos store an entity index as the site: resolve it from the planter's place at the plant tick
+    rounds = pd.DataFrame([{"round_num": 1, "plant_site": 236.0}, {"round_num": 2, "plant_site": "A"}])
+    bomb = pd.DataFrame([{"tick": 100, "round_num": 1, "t": 5.0, "event": "plant", "player": 7, "site": 236.0},
+                         {"tick": 300, "round_num": 2, "t": 5.0, "event": "plant", "player": 7, "site": 235.0}])
+    samples = pd.DataFrame([{"round_num": 1, "tick": 99, "steamid": 7, "place": "BombsiteB"},
+                            {"round_num": 1, "tick": 100, "steamid": 7, "place": "BombsiteB"}])
+    m = type("M", (), {"rounds": rounds, "bomb": bomb, "samples": samples})()
+    assert plant_sites(m) == {1: "B", 2: "A"}
+
+
+def test_horizon_target_and_site_features(match):
+    zoner = Zoner()
+    ds = Dataset.build([match], zoner)
+    phases = {st.phase for st in ds.states}
+    assert "pre" in phases and phases & {"postA", "postB", "post"}
+    from poswing.winprob import PositionalLayer
+
+    m_out = ds.fit_model("de_synth", positional=PositionalLayer(target="outcome", shrink_rounds=0.0))
+    m_hor = ds.fit_model("de_synth", positional=PositionalLayer(target="horizon", horizon=15.0, shrink_rounds=5.0))
+    assert m_hor.positional.target == "horizon"
+    # both still find the planted strong zones, horizon coefficients are more conservative
+    for model in (m_out, m_hor):
+        zc = {(r["side"], r["phase"], r["zone"]): r["pp_at_50"] for r in model.zone_coefficients()}
+        assert zc[("T", "pre", "TRamp")] > 0 and zc[("CT", "pre", "Connector")] > 0
+    assert np.mean(np.abs(m_hor.positional.coef)) < np.mean(np.abs(m_out.positional.coef))
+    # roundtrip keeps the new parameters
+    import tempfile, os
+    fd, path = tempfile.mkstemp(suffix=".json"); os.close(fd)
+    m_hor.save(path)
+    back = WinProbModel.load(path)
+    assert back.positional.target == "horizon" and back.positional.horizon == 15.0 and back.positional.shrink_rounds == 5.0
+    os.unlink(path)

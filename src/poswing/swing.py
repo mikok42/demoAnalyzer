@@ -24,7 +24,7 @@ import pandas as pd
 
 from .constants import TRADE_WINDOW_S
 from .data import MatchData
-from .state import GameState, add_zones, build_states
+from .state import GameState, add_zones, build_states, plant_sites
 from .winprob import WinProbModel, _sigmoid
 from .zones import Zoner
 
@@ -53,6 +53,7 @@ def compute_swing(match: MatchData, model: WinProbModel, zoner: Zoner,
     if meta.empty:
         raise ValueError("no states to compute swing on")
     samples_z = add_zones(match, zoner)
+    sites = plant_sites(match)
     lookup = {(int(r), int(t)): i for i, (r, t) in enumerate(zip(meta["round_num"], meta["tick"]))}
     side_of = match.samples.groupby(["round_num", "steamid"])["team"].first().to_dict()
     roster = match.samples.groupby(["round_num", "team"])["steamid"].agg(lambda s: sorted(set(s))).to_dict()
@@ -83,6 +84,7 @@ def compute_swing(match: MatchData, model: WinProbModel, zoner: Zoner,
         kill_times: dict[int, list[float]] = {}
         added: dict[int, float] = {}
         added_post: dict[int, float] = {}
+        sum_t = 0.0
         last_sync_tick = None
 
         for kind, tick, ev in events:
@@ -94,12 +96,11 @@ def compute_swing(match: MatchData, model: WinProbModel, zoner: Zoner,
                 last_sync_tick = tick
             before = running
             if kind == "plant":
-                after = replace(before, bomb_planted=True, time_left=40.0)
+                after = replace(before, bomb_planted=True, time_left=40.0, bomb_site=sites.get(rnum))
                 d_t = model.p_t(after, False) - model.p_t(before, False)
                 alive_t = [sid for sid in roster.get((rnum, "T"), []) if _alive(sid, rnum, tick, match)]
                 if not alive_t:
                     alive_t = roster.get((rnum, "T"), [])
-                for sid in alive_t:
                 for sid in alive_t:
                     rows.append(_row(rnum, tick, float(ev.t), "plant", sid, "T", d_t / len(alive_t), "swing"))
                     added[sid] = added.get(sid, 0.0) + max(0.0, d_t / len(alive_t))
@@ -109,6 +110,7 @@ def compute_swing(match: MatchData, model: WinProbModel, zoner: Zoner,
                 sum_t += d_t
                 running = after
                 continue
+            k = ev
             victim = int(k.victim)
             vteam = str(k.victim_team)
             attacker = int(k.attacker) if pd.notna(k.attacker) else None
@@ -128,6 +130,7 @@ def compute_swing(match: MatchData, model: WinProbModel, zoner: Zoner,
                 d_own = model.p_side(after, vteam, False) - model.p_side(before, vteam, False)
                 rows.append(_row(rnum, tick, float(k.t), "team_kill", attacker, vteam, min(0.0, d_own), "swing"))
                 rows.append(_row(rnum, tick, float(k.t), "death", victim, vteam, 0.0, "swing"))
+                sum_t += (min(0.0, d_own) if vteam == "T" else -min(0.0, d_own))
                 running = after
                 death_times.append((float(k.t), victim, attacker, vteam))
                 continue
@@ -135,6 +138,7 @@ def compute_swing(match: MatchData, model: WinProbModel, zoner: Zoner,
             delta = max(0.0, delta)  # no negative swing for a kill (Oct 2026 rule)
             # victim side
             rows.append(_row(rnum, tick, float(k.t), "death", victim, vteam, -delta, "swing"))
+            sum_t += delta if killer_side == "T" else -delta
 
             if attacker is None:
                 # world / suicide: the enemy team gains but nobody did anything
@@ -203,7 +207,8 @@ def compute_swing(match: MatchData, model: WinProbModel, zoner: Zoner,
         end_idx = lookup.get((rnum, int(r.end_tick)))
         last_state = _merge_running(running, states[end_idx]) if end_idx is not None else running
         p_last = model.p_t(last_state, False)
-        residual_t = outcome - p_last
+        # residual closes the round to the outcome after clamped kill credits (sum_t)
+        residual_t = outcome - p0 - sum_t
         winner = r.winner
         loser = "CT" if winner == "T" else "T"
         win_roster = roster.get((rnum, winner), [])
@@ -282,39 +287,20 @@ def _remove_player(st: GameState, side: str, zone: str) -> GameState:
 
 def _zone_contribution(model: WinProbModel, st: GameState, side: str, zone: str) -> float:
     """Win-probability the player's zone adds for their side (sign matters)."""
-    feat = f"{side}|{st.phase}|{zone}"
-
-def _zone_contribution(model: WinProbModel, st: GameState, side: str, zone: str) -> float:
-    """Win-probability the player's zone adds for their side (sign matters)."""
     stacked = list(st.zones_of(side)).count(zone) > 1
     feat = f"{side}|{st.phase}|{zone}" + ("|extra" if stacked else "")
     j = model.positional.index.get(feat)
     if j is None or st.terminal_t_win() is not None:
         return 0.0
+    # approximate local effect of this feature at the current baseline logit
+    base = model.baseline.logit(st)
+    coef = float(model.positional.coef[j])
+    p0 = float(_sigmoid(base))
+    p1 = float(_sigmoid(base + coef))
+    diff = p1 - p0
     return diff if side == "T" else -diff
 
 
-def _movement_rows(samples_z: pd.DataFrame, model, meta, states, idx_round, rnum) -> list[dict]:
-    rows: list[dict] = []
-    s = samples_z[samples_z["round_num"] == rnum]
-    by_tick = {t: g for t, g in s.groupby("tick")}
-    edges_t = model.predict([states[i] for i in idx_round], True) - model.predict([states[i] for i in idx_round], False)
-    for a, b, ea, eb in zip(idx_round[:-1], idx_round[1:], edges_t[:-1], edges_t[1:]):
-        if meta.at[a, "is_event"] or meta.at[b, "is_event"]:
-            continue
-        ta, tb = int(meta.at[a, "tick"]), int(meta.at[b, "tick"])
-        ga, gb = by_tick.get(ta), by_tick.get(tb)
-        if ga is None or gb is None:
-            continue
-        d_edge_t = float(eb - ea)
-        if abs(d_edge_t) < 1e-9:
-            continue
-        za = ga[ga["is_alive"]].set_index("steamid")["zone"]
-        zb = gb[gb["is_alive"]].set_index("steamid")["zone"]
-        common = za.index.intersection(zb.index)
-        movers = [sid for sid in common if za[sid] != zb[sid]]
-        if not movers:
-            continue
 def _movement_rows(samples_z: pd.DataFrame, model, meta, states, idx_round, rnum) -> list[dict]:
     rows: list[dict] = []
     s = samples_z[samples_z["round_num"] == rnum]
@@ -353,6 +339,27 @@ def _movement_rows(samples_z: pd.DataFrame, model, meta, states, idx_round, rnum
                                  sign * d_edge_t / len(side_movers), "pos_move"))
     return rows
 
+
+def _aggregate(events: pd.DataFrame, match: MatchData) -> pd.DataFrame:
+    if events.empty:
+        return pd.DataFrame()
+    rounds_played = match.samples.groupby("steamid")["round_num"].nunique()
+    piv = events.pivot_table(index="steamid", columns="component", values="delta", aggfunc="sum", fill_value=0.0)
+    for c in ("swing", "pos_move", "pos_death"):
+        if c not in piv:
+            piv[c] = 0.0
+    kinds = events[events["component"] == "swing"].pivot_table(index="steamid", columns="kind", values="delta", aggfunc="sum", fill_value=0.0)
+    out = pd.DataFrame(index=piv.index)
+    out["name"] = [match.player_name(s) for s in out.index]
+    out["rounds"] = rounds_played.reindex(out.index).fillna(0).astype(int)
+    n = out["rounds"].replace(0, 1)
+    out["swing_pct"] = piv["swing"] / n * 100
+    pos = events[events["component"] == "swing"]
+    out["added_pct"] = pos[pos["delta"] > 0].groupby("steamid")["delta"].sum().reindex(out.index).fillna(0) / n * 100
+    out["deducted_pct"] = pos[pos["delta"] < 0].groupby("steamid")["delta"].sum().reindex(out.index).fillna(0) / n * 100
+    for k in ("kill", "damage", "flash", "traded", "death", "plant", "defuse", "round_end", "team_kill"):
+        out[f"{k}_pct"] = (kinds[k] if k in kinds else 0.0)
+        out[f"{k}_pct"] = pd.Series(out[f"{k}_pct"], index=out.index).fillna(0) / n * 100
     out["pos_move_pct"] = piv["pos_move"] / n * 100
     out["pos_death_pct"] = piv["pos_death"] / n * 100
     out["pos_total_pct"] = out["pos_move_pct"] + out["pos_death_pct"]

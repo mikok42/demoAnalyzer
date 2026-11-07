@@ -53,6 +53,12 @@ def _clean(v: Any) -> Any:
     return v
 
 
+def _sid(v: Any) -> str | None:
+    """Steam IDs exceed JavaScript's safe integer range, so they travel as strings."""
+    v = _clean(v)
+    return None if v is None else str(int(v))
+
+
 def records(df: pd.DataFrame, columns: list[str] | None = None, ndigits: int | None = 3) -> list[dict]:
     if df is None or df.empty:
         return []
@@ -64,6 +70,8 @@ def records(df: pd.DataFrame, columns: list[str] | None = None, ndigits: int | N
             v = _clean(v)
             if ndigits is not None and isinstance(v, float):
                 v = round(v, ndigits)
+            if c == "steamid":
+                v = _sid(v)
             d[c] = v
         out.append(d)
     return out
@@ -226,7 +234,7 @@ class MatchSession:
             ev = ev.sort_values("abs", ascending=False).drop_duplicates(["round_num", "tick", "kind"]).head(12)
             for e in ev.itertuples(index=False):
                 key.append({"round_num": int(e.round_num), "tick": int(e.tick), "t": float(e.t), "kind": e.kind,
-                            "steamid": int(e.steamid), "name": m.player_name(int(e.steamid)), "team": e.team,
+                            "steamid": _sid(e.steamid), "name": m.player_name(int(e.steamid)), "team": e.team,
                             "delta_pp": round(100 * float(e.delta), 1)})
         return _clean({
             "source": m.source, "map_name": m.map_name, "tick_rate": m.tick_rate, "n_rounds": m.n_rounds,
@@ -234,7 +242,7 @@ class MatchSession:
             "model": {"source": self.model_source, "n_rounds": self.model.n_rounds, "n_states": self.model.n_states,
                       "features": len(self.model.positional.features), "target": self.model.positional.target},
             "radar": resources.radar_info(m.map_name),
-            "players": [{"steamid": int(s), "name": str(n), "team": team_name.get(int(s))}
+            "players": [{"steamid": _sid(s), "name": str(n), "team": team_name.get(int(s))}
                         for s, n in zip(players["steamid"], players["name"])],
             "rounds": self.rounds_table(),
             "box_score": records(box),
@@ -255,7 +263,7 @@ class MatchSession:
         frames = []
         for tick, g in s.groupby("tick", sort=True):
             t = float(g["t"].iloc[0])
-            players = [[int(p.steamid), bool(p.is_alive), round(float(p.x), 1), round(float(p.y), 1), round(float(p.z), 1),
+            players = [[_sid(p.steamid), bool(p.is_alive), round(float(p.x), 1), round(float(p.y), 1), round(float(p.z), 1),
                         int(p.health), str(p.zone)] for p in g.itertuples(index=False)]
             frames.append({
                 "tick": int(tick), "t": round(t, 3),
@@ -295,10 +303,10 @@ class MatchSession:
                                      "site": plant_sites(m).get(round_num) if b.event == "plant" else None, "pos": pos}))
         ev = self.swing.events
         ev = ev[ev["round_num"] == round_num] if not ev.empty else ev
-        events = [{"tick": int(e.tick), "t": float(e.t), "kind": e.kind, "steamid": int(e.steamid),
+        events = [{"tick": int(e.tick), "t": float(e.t), "kind": e.kind, "steamid": _sid(e.steamid),
                    "name": m.player_name(int(e.steamid)), "team": e.team, "component": e.component,
                    "delta": round(float(e.delta), 4)} for e in ev.itertuples(index=False)]
-        roster = {int(sid): {"name": m.player_name(int(sid)), "team": str(team)}
+        roster = {_sid(sid): {"name": m.player_name(int(sid)), "team": str(team)}
                   for sid, team in s.groupby("steamid")["team"].first().items()}
         return _clean({
             "round_num": int(round_num), "winner": r["winner"], "reason": r["reason"],
@@ -326,7 +334,7 @@ class MatchSession:
             moves = []
             for name, a, b in ln.moves:
                 pl = next((p for p in own if p.name == name and p.zone == a), None)
-                moves.append({"name": name, "steamid": pl.steamid if pl else None, "from": a, "to": b,
+                moves.append({"name": name, "steamid": _sid(pl.steamid) if pl else None, "from": a, "to": b,
                               "to_xy": list(cent.get(b, (None, None))), "from_xy": list(cent.get(a, (None, None)))})
             out_lines.append({"p_win": round(ln.p_win, 4), "delta_pp": round(100 * ln.delta, 2),
                               "zones": list(ln.zones), "moves": moves})
@@ -335,8 +343,8 @@ class MatchSession:
             "team": sit.teams.get(side), "enemy_team": sit.teams.get(enemy),
             "p_now": round(p_now, 4), "p_base": round(self.model.p_side(sit.state, side, False), 4),
             "phase": sit.state.phase, "horizon": horizon, "enemy_mode": enemy_mode,
-            "own": [{"steamid": p.steamid, "name": p.name, "zone": p.zone} for p in sit.own(side)],
-            "enemy": [{"steamid": p.steamid, "name": p.name, "zone": p.zone} for p in sit.own(enemy)],
+            "own": [{"steamid": _sid(p.steamid), "name": p.name, "zone": p.zone} for p in sit.own(side)],
+            "enemy": [{"steamid": _sid(p.steamid), "name": p.name, "zone": p.zone} for p in sit.own(enemy)],
             "lines": out_lines,
         })
 
