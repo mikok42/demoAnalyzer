@@ -7,3 +7,8 @@ dist/
 *.dem
 *.pkl
 cache/
+
+# Training corpora are local only (tens of GB). Manifests stay tracked.
+data/*
+!data/inventory.json
+!data/cs2-selection.json
