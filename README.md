@@ -5,6 +5,7 @@ ingredients HLTV uses, plus an **engine mode**: give it a demo and a moment and 
 tells a team the best repositioning it could make.
 
 ```
+python3 -m pip install -U pip setuptools wheel
 pip install -e ".[web]"          # demoparser2 + FastAPI; omit [web] for the CLI only
 poswing serve                    # open http://127.0.0.1:8765, drop a .dem on the page
 poswing report demos/*.dem --cache cache/
@@ -20,8 +21,9 @@ other maps fall back to a fit on the demo itself.
 ## Quick start on a Mac
 
 ```
-git clone <this-repo> && cd poswing
+git clone https://github.com/mikok42/demoAnalyzer.git && cd demoAnalyzer
 python3 -m venv .venv && source .venv/bin/activate
+python -m pip install -U pip setuptools wheel   # macOS ships an old pip; this is required
 pip install -e ".[web]"
 ./run.sh                         # or: poswing serve
 # open http://127.0.0.1:8765, drop a .dem (or pass demos on the command line)

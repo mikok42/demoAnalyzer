@@ -11,7 +11,8 @@ else
   exit 1
 fi
 if ! "$PY" -c "import fastapi, uvicorn, demoparser2" 2>/dev/null; then
-  echo "installing poswing[web] into the current environment..."
+  echo "upgrading pip/setuptools, then installing poswing[web]..."
+  "$PY" -m pip install --upgrade pip setuptools wheel
   "$PY" -m pip install -e ".[web]"
 fi
 exec "$PY" -m poswing.cli serve "$@"
