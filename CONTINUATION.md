@@ -85,3 +85,16 @@ Canvases (earlier): compare `8e99e283-…`, round-4 `2ad4bc7f-…`.
 cd /agent/poswing && git log --oneline | head
 # latest at checkpoint should include the web UI commit
 ```
+
+
+## Persistence (2026-11-07 after VM wipe + iOS relaunch)
+
+- Local git: `/agent/poswing` on branch `main` (commit after transcript recovery).
+- Durable copies (this agent store):
+  - `artifacts/poswing.bundle` — `git clone poswing.bundle poswing`
+  - `artifacts/poswing-tree/` — full tree
+- **No GitHub remote**: user skipped `GITHUB_TOKEN` / gh login. Without a remote the
+  next hibernation can wipe `/agent` again; the store bundle is the backup until a
+  repo exists. Source of launch: `IOS_APP`.
+- Mirage bundled model JSON still missing (binary/large artifact not in transcript);
+  UI falls back to fit-on-demo. Radars + nav restored from awpy 1.3.1.
